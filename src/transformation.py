@@ -1,6 +1,6 @@
-# Agregace dat na den
+# Cisteni dat a pridani data_era
 # Martin Silar, SPSE Jecna C4c
-# v2 - pridana agregace sleep, HR a steps na denni zaznam
+# v3 - cisteni outliers, imputace NaN, pridani ery
 
 import pandas as pd
 import numpy as np
@@ -16,20 +16,17 @@ def load_hk_csv(filename):
         try:
             tmp = pd.read_csv(filename, sep=sep, low_memory=False)
             if len(tmp.columns) >= 3:
-                df = tmp
-                break
-        except:
-            continue
-    if df is None:
-        raise ValueError(f"Nepodarilo se nacist: {filename}")
+                df = tmp; break
+        except: continue
+    if df is None: raise ValueError(f"Nepodarilo se nacist: {filename}")
     rename_map = {}
     for col in df.columns:
         cl = col.lower().strip()
-        if 'start' in cl: rename_map[col] = 'ts_start'
+        if 'start' in cl:   rename_map[col] = 'ts_start'
         elif 'end' in cl and 'ts_end' not in rename_map.values():
             rename_map[col] = 'ts_end'
         elif 'duration' in cl: rename_map[col] = 'duration_sec'
-        elif cl == 'value': rename_map[col] = 'value'
+        elif cl == 'value':  rename_map[col] = 'value'
         elif 'source' in cl: rename_map[col] = 'source'
     return df.rename(columns=rename_map)
 
@@ -51,10 +48,9 @@ def classify_sleep_stage(val):
     v = str(val).strip().lower()
     if 'deep' in v or v == '3': return 'deep'
     elif 'rem' in v or v == '4': return 'rem'
-    elif 'core' in v or 'unspecified' in v or v in ['1','2']:
-        return 'core'
-    elif v == 'asleep' or (v.endswith('asleep') and 'deep' not in v and 'rem' not in v and 'core' not in v):
-        return 'legacy'
+    elif 'core' in v or 'unspecified' in v or v in ['1','2']: return 'core'
+    elif v == 'asleep' or (v.endswith('asleep') and 'deep' not in v
+                           and 'rem' not in v and 'core' not in v): return 'legacy'
     elif 'inbed' in v or v == '0': return 'inbed'
     elif 'awake' in v: return 'awake'
     else: return 'unknown'
@@ -66,18 +62,18 @@ def get_sleep_date(row):
     return row['date']
 
 
-# jednoducha agregace bez deduplikace
-def agg_sleep_simple(df_day):
+def agg_sleep(df_day):
     deep = df_day[df_day['stage'] == 'deep']['duration_min'].sum()
     rem = df_day[df_day['stage'] == 'rem']['duration_min'].sum()
     core = df_day[df_day['stage'] == 'core']['duration_min'].sum()
     total = deep + rem + core
+    awake = df_day[df_day['stage'] == 'awake']['duration_min'].sum()
+    ib = df_day[df_day['stage'] == 'inbed']['duration_min'].sum()
     awakenings = int((df_day['stage'] == 'awake').sum())
+    time_in_bed = (total+awake) if (ib > total*3 and total > 0) else (total+awake+ib)
     return pd.Series({
-        'sleep_total_min': total,
-        'sleep_deep_min':  deep,
-        'sleep_rem_min':   rem,
-        'sleep_awakenings': awakenings,
+        'sleep_total_min': total, 'sleep_deep_min': deep,
+        'sleep_rem_min': rem, 'sleep_awakenings': awakenings,
     })
 
 
@@ -90,46 +86,73 @@ df_sleep = parse_timestamps(load_hk_csv('HKCategoryTypeIdentifierSleepAnalysis.c
 df_sleep['stage'] = df_sleep['value'].apply(classify_sleep_stage)
 df_sleep['duration_min'] = df_sleep['duration_sec'] / 60.0
 df_sleep['sleep_date'] = df_sleep.apply(get_sleep_date, axis=1)
-
 df_sleep_daily = (
     df_sleep.groupby('sleep_date', group_keys=False)
-    .apply(agg_sleep_simple).reset_index()
-    .rename(columns={'sleep_date':'date'})
+    .apply(agg_sleep).reset_index()
+    .rename(columns={'sleep_date': 'date'})
 )
 
 df_hr['value'] = pd.to_numeric(df_hr['value'], errors='coerce')
 df_hr = df_hr.dropna(subset=['value'])
+df_hr = df_hr[df_hr['value'] <= 220]
 df_hr['is_night'] = df_hr['hour'].apply(lambda h: h >= 22 or h < 6)
 df_hr_daily = df_hr.groupby('date').apply(
     lambda g: pd.Series({'hr_night_avg': g[g['is_night']]['value'].mean()
     if (g['is_night']).sum() >= 3 else np.nan})).reset_index()
+df_hr_daily = df_hr_daily.sort_values('date').reset_index(drop=True)
 
+# zmrazene hodnoty (hodinky nebyly nasazeny)
+frozen = (df_hr_daily['hr_night_avg'].eq(df_hr_daily['hr_night_avg'].shift(1)) &
+          df_hr_daily['hr_night_avg'].eq(df_hr_daily['hr_night_avg'].shift(2)) &
+          df_hr_daily['hr_night_avg'].eq(df_hr_daily['hr_night_avg'].shift(3)) &
+          df_hr_daily['hr_night_avg'].eq(df_hr_daily['hr_night_avg'].shift(4)))
+df_hr_daily.loc[frozen, 'hr_night_avg'] = np.nan
+print(f"Zmrazenych HR: {frozen.sum()}")
 
 df_steps['value'] = pd.to_numeric(df_steps['value'], errors='coerce')
-df_steps_daily = df_steps.groupby('date').agg(steps_total=('value','sum')).reset_index()
+df_steps = df_steps.dropna(subset=['value'])
+df_steps_daily = df_steps.groupby('date').agg(steps_total=('value', 'sum')).reset_index()
 
 df_act['value'] = pd.to_numeric(df_act['value'], errors='coerce')
-df_act_daily = df_act.groupby('date').agg(active_kcal=('value','sum')).reset_index()
+df_act = df_act.dropna(subset=['value'])
+df_act_daily = df_act.groupby('date').agg(active_kcal=('value', 'sum')).reset_index()
 
-# merge
 df = df_sleep_daily.copy()
 df['date'] = pd.to_datetime(df['date'])
-for other, name in [(df_hr_daily,'HR'),(df_steps_daily,'steps'),(df_act_daily,'kcal')]:
+for other, name in [(df_hr_daily, 'HR'), (df_steps_daily, 'steps'), (df_act_daily, 'kcal')]:
     other = other.copy(); other['date'] = pd.to_datetime(other['date'])
     df = df.merge(other, on='date', how='left')
 
-print(f"Mergnutych dni: {len(df)}")
-print(df[['sleep_total_min','hr_night_avg','steps_total','active_kcal']].describe().round(1))
+df['day_of_week'] = df['date'].dt.dayofweek
+df['month'] = df['date'].dt.month
 
-# vizualizace
-fig, axes = plt.subplots(1, 3, figsize=(14, 4))
-axes[0].hist(df['sleep_total_min'].dropna()/60, bins=40, color='navy', edgecolor='white')
-axes[0].set_title('Delka spanku (h)')
-axes[1].hist(df['hr_night_avg'].dropna(), bins=40, color='crimson', edgecolor='white')
-axes[1].set_title('Nocni HR (BPM)')
-axes[2].hist(df['steps_total'].dropna(), bins=40, color='green', edgecolor='white')
-axes[2].set_title('Kroky za den')
+# data_era - od 2022-12-01 spolehlivy faze spanku
+STAGES_ERA_START = pd.Timestamp('2022-12-01')
+df['data_era'] = (df['date'] >= STAGES_ERA_START).astype(int)
+df.loc[df['data_era'] == 0, 'sleep_awakenings'] = 0
+
+# cisteni
+print(f"Pred cistenim: {len(df)}")
+df = df[(df['sleep_total_min'] >= 180) & (df['sleep_total_min'] <= 840)]
+df = df[df['active_kcal'] > 0]
+print(f"Po cisteni: {len(df)}")
+
+# imputace NaN medianem
+for col in ['hr_night_avg', 'steps_total']:
+    n = df[col].isna().sum()
+    if n > 0:
+        df[col] = df[col].fillna(df[col].median())
+        print(f"  {col}: {n} NaN imputovano medianem")
+
+print(df.groupby('data_era')['date'].agg(['count','min','max']))
+
+# vizualizace po cisteni
+fig, ax = plt.subplots(figsize=(10, 4))
+ax.scatter(df['date'], df['sleep_total_min']/60,
+           s=2, alpha=0.4, c=df['data_era'], cmap='coolwarm')
+ax.set_title('Delka spanku v case (modra=era 0, cervena=era 1)')
+ax.axhline(7.5, color='red', linestyle='--', linewidth=1)
 plt.tight_layout()
-plt.savefig('v2_daily_overview.png', dpi=120)
+plt.savefig('v3_sleep_over_time.png', dpi=120)
 plt.show()
-print("Graf ulozen: v2_daily_overview.png")
+print("Graf ulozen: v3_sleep_over_time.png")
