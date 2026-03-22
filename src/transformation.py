@@ -1,7 +1,8 @@
-# Vizualizace a oprava dvojiteho pocitani kroku
+# Oprava double counting spankových dat
 # Martin Silar, SPSE Jecna C4c
-# v4.1 - pridana funkce get_preferred_source (Watch vs iPhone)
-#        kompletni vizualizace 9 grafu
+# v4.2 - merge_intervals funkce pro spravnou agregaci spanku
+#        Apple Health 2023 exportoval kazdy usek dvakrat (legacy + novy format)
+#        bez opravy vychazely spanky 12-14h misto realnych 7-8h
 
 import pandas as pd
 import numpy as np
@@ -48,7 +49,8 @@ def classify_sleep_stage(val):
     v = str(val).strip().lower()
     if 'deep' in v or v == '3': return 'deep'
     elif 'rem' in v or v == '4': return 'rem'
-    elif 'core' in v or 'unspecified' in v or v in ['1','2']: return 'core'
+    elif 'core' in v or 'unspecified' in v or v in ['1', '2']: return 'core'
+    # 'asleep' bez specifikace = legacy format - oddelime od core
     elif v == 'asleep' or (v.endswith('asleep') and 'deep' not in v
                            and 'rem' not in v and 'core' not in v): return 'legacy'
     elif 'inbed' in v or v == '0': return 'inbed'
@@ -62,19 +64,12 @@ def get_sleep_date(row):
     return row['date']
 
 
-def agg_sleep(df_day):
-    deep = df_day[df_day['stage'] == 'deep']['duration_min'].sum()
-    rem = df_day[df_day['stage'] == 'rem']['duration_min'].sum()
-    core = df_day[df_day['stage'] == 'core']['duration_min'].sum()
-    total = deep + rem + core
-    awake = df_day[df_day['stage'] == 'awake']['duration_min'].sum()
-    ib = df_day[df_day['stage'] == 'inbed']['duration_min'].sum()
-    awakenings = int((df_day['stage'] == 'awake').sum())
-    time_in_bed = (total+awake) if (ib > total*3 and total > 0) else (total+awake+ib)
-    return pd.Series({
-        'sleep_total_min': total, 'sleep_deep_min': deep,
-        'sleep_rem_min': rem, 'sleep_awakenings': awakenings,
-    })
+def get_preferred_source(group):
+    if 'source' not in group.columns: return group
+    for s in group['source'].unique():
+        if 'watch' in str(s).lower():
+            return group[group['source'] == s]
+    return group
 
 
 def compute_sleep_score(row):
@@ -88,19 +83,65 @@ def compute_sleep_score(row):
         dur = max(0.0, 35.0 - abs(hours - 7.5) * 10.0)
         hrt = max(0.0, 20.0 - max(0.0, hr - 55.0) * 0.7)
         deep = min(20.0, (row['sleep_deep_min']/row['sleep_total_min'])*100) if row['sleep_total_min'] > 0 else 0
-        rem = min(15.0, (row['sleep_rem_min']/row['sleep_total_min'])*75) if row['sleep_total_min'] > 0 else 0
+        rem = min(15.0, (row['sleep_rem_min'] /row['sleep_total_min'])*75)  if row['sleep_total_min'] > 0 else 0
         wake = max(0.0, 10.0 - row['sleep_awakenings'] * 1.2)
         return round(min(100.0, max(0.0, dur+hrt+deep+rem+wake)), 2)
 
 
-# Watch ma prednost pred iPhonem - jinak se kroky pocitaji dvakrat
-def get_preferred_source(group):
-    if 'source' not in group.columns:
-        return group
-    for s in group['source'].unique():
-        if 'watch' in str(s).lower():
-            return group[group['source'] == s]
-    return group
+# Nova funkce - slouci prekryvajici se casove useky
+# Problem: Apple 2023 exportoval jeden velky 'asleepCore' blok (cela noc ~8h)
+#          + male asleepCore useky (realne faze, ~2h core celkem)
+#          jednoduchy .sum() => 10h core, spravne je 2h
+# Reseni: merge_intervals slouci prekryvy => spravna celkova doba
+def merge_intervals(intervals):
+    if not intervals: return 0.0
+    intervals = sorted(intervals, key=lambda x: x[0])
+    merged = [list(intervals[0])]
+    for start, end in intervals[1:]:
+        if start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return sum(e - s for s, e in merged) / 60.0  # sekundy -> minuty
+
+
+def agg_sleep(df_day):
+    awakenings = int((df_day['stage'] == 'awake').sum())
+    has_ts = 'ts_start' in df_day.columns and 'ts_end' in df_day.columns
+
+    if has_ts:
+        def get_iv(stage):
+            sub = df_day[df_day['stage'] == stage][['ts_start', 'ts_end']].dropna()
+            return [(r.ts_start, r.ts_end) for _, r in sub.iterrows()]
+
+        deep_min = merge_intervals(get_iv('deep'))
+        rem_min = merge_intervals(get_iv('rem'))
+        awake_min = merge_intervals(get_iv('awake'))
+        ib_min = merge_intervals(get_iv('inbed'))
+
+        all_iv = get_iv('deep') + get_iv('rem') + get_iv('core')
+        if not all_iv: all_iv = get_iv('legacy')
+        total = merge_intervals(all_iv)
+
+        # core = co zbyde po odecteni deep a rem (eliminuje duplikatni velky blok)
+        core_min = max(0.0, total - deep_min - rem_min) if (deep_min+rem_min) > 0 else merge_intervals(get_iv('core') or get_iv('legacy'))
+    else:
+        deep_min = df_day[df_day['stage'] == 'deep']['duration_min'].sum()
+        rem_min = df_day[df_day['stage'] == 'rem']['duration_min'].sum()
+        core_min = df_day[df_day['stage'] == 'core']['duration_min'].sum()
+        legacy = df_day[df_day['stage'] == 'legacy']['duration_min'].sum()
+        awake_min = df_day[df_day['stage'] == 'awake']['duration_min'].sum()
+        ib_min = df_day[df_day['stage'] == 'inbed']['duration_min'].sum()
+        total = deep_min+rem_min+core_min if (deep_min+rem_min) > 0 else (legacy or core_min)
+        core_min = max(0.0, total - deep_min - rem_min) if (deep_min+rem_min) > 0 else core_min
+
+    time_in_bed = (total+awake_min) if (ib_min > total*3 and total > 0) else (total+awake_min+ib_min)
+    efficiency = (total/time_in_bed*100) if time_in_bed > 30 else np.nan
+
+    return pd.Series({
+        'sleep_total_min': total, 'sleep_deep_min': deep_min,
+        'sleep_rem_min': rem_min, 'sleep_awakenings': awakenings,
+    })
 
 
 print("Nacitam...")
@@ -117,6 +158,8 @@ df_sleep_daily = (
     .apply(agg_sleep).reset_index()
     .rename(columns={'sleep_date': 'date'})
 )
+print(f"Sleep agregace hotova: {len(df_sleep_daily)} dni")
+print(f"sleep_total max: {df_sleep_daily['sleep_total_min'].max()/60:.1f}h (ocekavam <12h)")
 
 df_hr['value'] = pd.to_numeric(df_hr['value'], errors='coerce')
 df_hr = df_hr[df_hr['value'].notna() & (df_hr['value'] <= 220)]
@@ -133,12 +176,10 @@ df_hr_daily.loc[frozen, 'hr_night_avg'] = np.nan
 
 df_steps['value'] = pd.to_numeric(df_steps['value'], errors='coerce')
 df_steps = df_steps.dropna(subset=['value'])
-# nova funkce - preferujeme Watch zdroj
 df_steps_daily = (
     df_steps.groupby('date', group_keys=False).apply(get_preferred_source)
     .groupby('date').agg(steps_total=('value', 'sum')).reset_index()
 )
-
 df_act['value'] = pd.to_numeric(df_act['value'], errors='coerce')
 df_act_daily = df_act.dropna(subset=['value']).groupby('date').agg(
     active_kcal=('value', 'sum')).reset_index()
@@ -146,7 +187,8 @@ df_act_daily = df_act.dropna(subset=['value']).groupby('date').agg(
 df = df_sleep_daily.copy()
 df['date'] = pd.to_datetime(df['date'])
 for other in [df_hr_daily, df_steps_daily, df_act_daily]:
-    other = other.copy(); other['date'] = pd.to_datetime(other['date'])
+    other = other.copy()
+    other['date'] = pd.to_datetime(other['date'])
     df = df.merge(other, on='date', how='left')
 
 df['day_of_week'] = df['date'].dt.dayofweek
@@ -160,47 +202,10 @@ for col in ['hr_night_avg', 'steps_total']:
 
 df['sleep_score'] = df.apply(compute_sleep_score, axis=1)
 
-# kompletni vizualizace 9 grafu
-fig, axes = plt.subplots(3, 3, figsize=(16, 12))
-fig.suptitle('Prehled vycistennych dat - Sleep Score Predictor', fontsize=14)
-
-axes[0, 0].hist(df['sleep_score'], bins=40, color='steelblue', edgecolor='white')
-axes[0, 0].set_title('Sleep Score (target)')
-
-for era, color, label in [(0,'steelblue','Era 0'),(1,'crimson','Era 1')]:
-    axes[0, 1].hist(df[df['data_era']==era]['sleep_score'],
-                   bins=30, alpha=0.6, color=color, label=label, edgecolor='white')
-axes[0, 1].set_title('Sleep Score po erach')
-axes[0, 1].legend(fontsize=8)
-
-axes[0, 2].scatter(df['date'], df['sleep_score'], s=2, alpha=0.4,
-                  c=df['data_era'], cmap='coolwarm')
-axes[0, 2].set_title('Sleep Score v case (modra=era 0, cervena=era 1)')
-
-axes[1, 0].hist(df['sleep_total_min']/60, bins=40, color='navy', edgecolor='white')
-axes[1, 0].axvline(7.5, color='red', linestyle='--', label='optimum 7.5h')
-axes[1, 0].set_title('Delka spanku (hodiny)')
-axes[1, 0].legend(fontsize=8)
-
-axes[1, 1].hist(df['hr_night_avg'], bins=40, color='crimson', edgecolor='white')
-axes[1, 1].axvline(55, color='red', linestyle='--', label='optimum <=55 BPM')
-axes[1, 1].set_title('Nocni HR (BPM)')
-axes[1, 1].legend(fontsize=8)
-
+# overeni ze double counting je opraveny
 era1 = df[df['data_era'] == 1]
-axes[1, 2].hist(era1['sleep_deep_min'], bins=40, color='purple', edgecolor='white')
-axes[1, 2].set_title('Deep Sleep min (era 1)')
-
-axes[2, 0].hist(era1['sleep_rem_min'], bins=40, color='indigo', edgecolor='white')
-axes[2, 0].set_title('REM Sleep min (era 1)')
-
-axes[2, 1].hist(df['steps_total'], bins=40, color='green', edgecolor='white')
-axes[2, 1].set_title('Kroky za den')
-
-axes[2, 2].hist(df['active_kcal'], bins=40, color='orange', edgecolor='white')
-axes[2, 2].set_title('Aktivni kalorie za den')
-
-plt.tight_layout()
-plt.savefig('v4_1_overview.png', dpi=150)
-plt.show()
-print(f"Ulozen dataset: {len(df)} dni")
+low = df[(df['data_era'] == 1) & (df['sleep_score'] < 50)]
+print(f"\nOvereni opravy:")
+print(f"  sleep_total max: {df['sleep_total_min'].max()/60:.1f}h")
+print(f"  score < 50 v era 1: {len(low)} dni (pred opravou bylo 70)")
+print(f"\nCelkem dni: {len(df)}")
