@@ -1,7 +1,7 @@
-# Vizualizace a korelacni matice
+# Finalni verze s evaluaci modelu
 # Martin Silar, SPSE Jecna C4c
-# v4.4 - HR stacked bar (imputovane hodnoty viditelne oddelene)
-#        korelacni matice features vs sleep_score
+# v5 - pridana orientacni evaluace modelu (MAE, RMSE, R2)
+#      finalni souhrn, export jako health_daily_v5.csv
 
 import pandas as pd
 import numpy as np
@@ -10,6 +10,8 @@ import datetime
 import warnings
 from matplotlib.patches import Patch as _P
 from matplotlib.lines import Line2D as _L
+from sklearn.ensemble import GradientBoostingRegressor
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 warnings.filterwarnings('ignore')
 
 
@@ -89,7 +91,7 @@ def agg_sleep(df_day):
     has_ts = 'ts_start' in df_day.columns and 'ts_end' in df_day.columns
     if has_ts:
         def get_iv(stage):
-            sub = df_day[df_day['stage'] == stage][['ts_start','ts_end']].dropna()
+            sub = df_day[df_day['stage'] == stage][['ts_start', 'ts_end']].dropna()
             return [(r.ts_start, r.ts_end) for _, r in sub.iterrows()]
         deep_min = merge_intervals(get_iv('deep'))
         rem_min = merge_intervals(get_iv('rem'))
@@ -195,7 +197,7 @@ n_imp = df['_imp'].sum()
 n_remove = max(0, min(n_imp, len(df) - MIN_DAYS))
 
 print(f"\nMinimalizace imputovanych HR:")
-print(f"  Celkem dni: {len(df)}, imputovanych: {n_imp}, mozu odstranit: {n_remove}")
+print(f"  Celkem dni: {len(df)}, imputovanych: {n_imp}, muzu odstranit: {n_remove}")
 
 if n_remove > 0:
     # najdu bloky po sobe jdoucich NaN dni
@@ -206,7 +208,7 @@ if n_remove > 0:
                        'start': grp['date'].min(), 'end': grp['date'].max()})
     blocks_df = pd.DataFrame(blocks).sort_values('length', ascending=False)
 
-    # greedy: mazam od nejdelsich bloku
+    # greedy: mazu od nejdelsich bloku
     to_remove = set()
     removed = 0
     for _, row in blocks_df.iterrows():
@@ -246,8 +248,7 @@ axes[0, 0].set_title('Sleep Score (target)')
 axes[0, 0].set_xlabel('Skore 0-100')
 
 for era, color, label in [(0, 'steelblue', 'Era 0 (bez fazi)'), (1, 'crimson', 'Era 1 (s fazemi)')]:
-    axes[0, 1].hist(df[df['data_era'] == era]['sleep_score'],
-                   bins=30, alpha=0.6, color=color, label=label, edgecolor='white')
+    axes[0, 1].hist(df[df['data_era'] == era]['sleep_score'], bins=30, alpha=0.6, color=color, label=label, edgecolor='white')
 axes[0, 1].set_title('Sleep Score po erach')
 axes[0, 1].legend(fontsize=8)
 
@@ -330,5 +331,46 @@ plt.savefig('v4_4_correlation.png', dpi=150)
 plt.show()
 print("Graf ulozen: v4_4_correlation.png")
 
-df[FINAL_COLS].to_csv('health_daily_v4_4.csv', index=False)
-print(f"Ulozeno: health_daily_v4_4.csv ({len(df)} dni)")
+
+# orientacni evaluace, jen pro overeni ze data jsou OK
+_split = int(len(df) * 0.8)
+FEATURES_EVAL = ['sleep_total_min', 'hr_night_avg', 'steps_total', 'active_kcal',
+                 'sleep_deep_min', 'sleep_rem_min', 'sleep_awakenings',
+                 'data_era', 'day_of_week', 'month']
+_gbr = GradientBoostingRegressor(n_estimators=200, max_depth=4,
+                                 learning_rate=0.05, random_state=42)
+_gbr.fit(df[FEATURES_EVAL].iloc[:_split], df['sleep_score'].iloc[:_split])
+_pred = _gbr.predict(df[FEATURES_EVAL].iloc[_split:])
+
+_mae = mean_absolute_error(df['sleep_score'].iloc[_split:], _pred)
+_rmse = mean_squared_error(df['sleep_score'].iloc[_split:], _pred) ** 0.5
+_r2 = r2_score(df['sleep_score'].iloc[_split:], _pred)
+
+print("\n=== ORIENTACNI EVALUACE ===")
+print(f"Train: {_split} dni  |  Test: {len(df)-_split} dni")
+print(f"MAE:   {_mae:.4f} bodu")
+print(f"RMSE:  {_rmse:.4f} bodu")
+print(f"R2:    {_r2:.4f}")
+
+# vliv imputace na MAE
+_med = df['hr_night_avg'].median()
+_imp_t = (df['hr_night_avg'].round(2).iloc[_split:] == round(_med, 2))
+if _imp_t.sum() > 0:
+    print(f"  MAE imputovane ({_imp_t.sum()} dni): {mean_absolute_error(df['sleep_score'].iloc[_split:][_imp_t], _pred[_imp_t]):.4f}")
+    print(f"  MAE ciste ({(~_imp_t).sum()} dni):   {mean_absolute_error(df['sleep_score'].iloc[_split:][~_imp_t], _pred[~_imp_t]):.4f}")
+else:
+    print("  Imputovane dny v test setu: 0 - MAE neni ovlivnena imputaci")
+
+df[FINAL_COLS].to_csv('health_daily_v5.csv', index=False)
+
+print(f"\n=== SOUHRN ===")
+print(f"Surove sleep segmenty:  {len(df_sleep)}")
+print(f"Po agregaci na dny:     {len(df_sleep_daily)}")
+print(f"Po cisteni:             {len(df)}")
+print(f"  Era 0 (bez fazi):     {(df['data_era']==0).sum()}")
+print(f"  Era 1 (s fazemi):     {(df['data_era']==1).sum()}")
+print(f"Pocet features:         {len(FEATURES_EVAL)}")
+print(f"Imputovanych HR:        {N_HR_IMPUTED} ({N_HR_IMPUTED/len(df)*100:.1f}%)")
+print(f"\nZname limitace:")
+print(f"  Mezera v datech: 2020-10-24 az 2022-01-12 (vymena zarizeni)")
+print(f"\nUlozeno: health_daily_v5.csv")
