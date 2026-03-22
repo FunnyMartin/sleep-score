@@ -1,16 +1,15 @@
-# Minimalizace imputovanych HR zaznamu
+# Vizualizace a korelacni matice
 # Martin Silar, SPSE Jecna C4c
-# v4.3 - greedy odstraneni bloku kde hr_night_avg chybi
-#        zachovavam >= MIN_DAYS zaznamu
-#        imputace medianem jen pro zbyle izolované NaN
-
-# [v teto verzi pridavam sekci Minimalizace do existujiciho kodu]
+# v4.4 - HR stacked bar (imputovane hodnoty viditelne oddelene)
+#        korelacni matice features vs sleep_score
 
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import datetime
 import warnings
+from matplotlib.patches import Patch as _P
+from matplotlib.lines import Line2D as _L
 warnings.filterwarnings('ignore')
 
 
@@ -64,6 +63,7 @@ def get_sleep_date(row):
         return row['date'] - datetime.timedelta(days=1)
     return row['date']
 
+
 def get_preferred_source(group):
     if 'source' not in group.columns: return group
     for s in group['source'].unique():
@@ -89,7 +89,7 @@ def agg_sleep(df_day):
     has_ts = 'ts_start' in df_day.columns and 'ts_end' in df_day.columns
     if has_ts:
         def get_iv(stage):
-            sub = df_day[df_day['stage'] == stage][['ts_start', 'ts_end']].dropna()
+            sub = df_day[df_day['stage'] == stage][['ts_start','ts_end']].dropna()
             return [(r.ts_start, r.ts_end) for _, r in sub.iterrows()]
         deep_min = merge_intervals(get_iv('deep'))
         rem_min = merge_intervals(get_iv('rem'))
@@ -126,7 +126,7 @@ def compute_sleep_score(row):
         dur = max(0.0, 35.0 - abs(hours - 7.5) * 10.0)
         hrt = max(0.0, 20.0 - max(0.0, hr - 55.0) * 0.7)
         deep = min(20.0, (row['sleep_deep_min']/row['sleep_total_min'])*100) if row['sleep_total_min'] > 0 else 0
-        rem = min(15.0, (row['sleep_rem_min']/row['sleep_total_min'])*75)  if row['sleep_total_min'] > 0 else 0
+        rem = min(15.0, (row['sleep_rem_min']/row['sleep_total_min'])*75) if row['sleep_total_min'] > 0 else 0
         wake = max(0.0, 10.0 - row['sleep_awakenings'] * 1.2)
         return round(min(100.0, max(0.0, dur+hrt+deep+rem+wake)), 2)
 
@@ -230,10 +230,105 @@ if N_HR_IMPUTED > 0:
 df = df.drop(columns=['_imp'])
 print(f"\n  Po minimalizaci: {len(df)} dni, zbyvajicich imputovanych: {N_HR_IMPUTED}")
 
-df['sleep_score'] = df.apply(compute_sleep_score, axis=1)
-
 FINAL_COLS = ['date', 'sleep_score', 'sleep_total_min', 'hr_night_avg',
               'steps_total', 'active_kcal', 'sleep_deep_min', 'sleep_rem_min',
               'sleep_awakenings', 'data_era', 'day_of_week', 'month']
-df[FINAL_COLS].to_csv('health_daily_v4_3.csv', index=False)
-print(f"Ulozeno: health_daily_v4_3.csv")
+
+df['sleep_score'] = df.apply(compute_sleep_score, axis=1)
+
+# vizualizace - stejne grafy jako predtim ale HR je stacked bar
+# (imputovane hodnoty jsou videt oddelene od realnych dat)
+fig, axes = plt.subplots(3, 3, figsize=(16, 12))
+fig.suptitle('Prehled vycistennych dat - Sleep Score Predictor', fontsize=14)
+
+axes[0, 0].hist(df['sleep_score'], bins=40, color='steelblue', edgecolor='white')
+axes[0, 0].set_title('Sleep Score (target)')
+axes[0, 0].set_xlabel('Skore 0-100')
+
+for era, color, label in [(0, 'steelblue', 'Era 0 (bez fazi)'), (1, 'crimson', 'Era 1 (s fazemi)')]:
+    axes[0, 1].hist(df[df['data_era'] == era]['sleep_score'],
+                   bins=30, alpha=0.6, color=color, label=label, edgecolor='white')
+axes[0, 1].set_title('Sleep Score po erach')
+axes[0, 1].legend(fontsize=8)
+
+axes[0, 2].scatter(df['date'], df['sleep_score'], s=2, alpha=0.4, c=df['data_era'], cmap='coolwarm')
+axes[0, 2].set_title('Sleep Score v case (modra=era 0, cervena=era 1)')
+
+axes[1, 0].hist(df['sleep_total_min']/60, bins=40, color='navy', edgecolor='white')
+axes[1, 0].axvline(7.5, color='red', linestyle='--', label='optimum 7.5h')
+axes[1, 0].set_title('Delka spanku (hodiny)')
+axes[1, 0].legend(fontsize=8)
+
+# HR stacked bar - imputovane hodnoty maji vsechny stejnou hodnotu (median)
+# zobrazim je oddelene aby bylo videt kolik jich je
+_median_hr = df['hr_night_avg'].median()
+# fallback detekce: kdyz N_HR_IMPUTED == 0 ale data maji zmrazene bloky
+_n_imp = N_HR_IMPUTED
+if _n_imp == 0:
+    _run = (df['hr_night_avg'] != df['hr_night_avg'].shift()).cumsum()
+    _cnt = df['hr_night_avg'].groupby(_run).transform('count')
+    _n_imp = int((_cnt >= 5).sum())
+
+_counts_hr, _edges_hr = np.histogram(df['hr_night_avg'], bins=40)
+_imp_bin = next((i for i in range(len(_edges_hr)-1)
+                 if _edges_hr[i] <= _median_hr <= _edges_hr[i+1]), None)
+for _i in range(len(_counts_hr)):
+    _w = _edges_hr[_i+1] - _edges_hr[_i]
+    if _i == _imp_bin and _n_imp > 0:
+        _nr = max(0, _counts_hr[_i] - _n_imp)
+        _ni = min(_n_imp, _counts_hr[_i])
+        axes[1, 1].bar(_edges_hr[_i], _nr, width=_w, color='crimson', edgecolor='white', align='edge')
+        axes[1, 1].bar(_edges_hr[_i], _ni, width=_w, bottom=_nr, color='silver', edgecolor='white', align='edge')
+    else:
+        axes[1, 1].bar(_edges_hr[_i], _counts_hr[_i], width=_w, color='crimson', edgecolor='white', align='edge')
+axes[1, 1].axvline(55, color='red', linestyle='--', linewidth=1.5)
+
+_leg = [_P(color='crimson', label='realna data'),
+        _L([0], [0], color='red', linestyle='--', linewidth=1.5, label='optimum <=55 BPM')]
+if _n_imp > 0:
+    _leg.insert(1, _P(color='silver', label=f'imputovano medianem: {_n_imp} dni'))
+axes[1, 1].legend(handles=_leg, fontsize=7)
+axes[1, 1].set_title('Nocni HR (BPM)')
+
+era1 = df[df['data_era'] == 1]
+axes[1, 2].hist(era1['sleep_deep_min'], bins=40, color='purple', edgecolor='white')
+axes[1, 2].set_title('Deep Sleep min (era 1)')
+
+axes[2, 0].hist(era1['sleep_rem_min'], bins=40, color='indigo', edgecolor='white')
+axes[2, 0].set_title('REM Sleep min (era 1)')
+
+axes[2, 1].hist(df['steps_total'], bins=40, color='green', edgecolor='white')
+axes[2, 1].set_title('Kroky za den')
+
+axes[2, 2].hist(df['active_kcal'], bins=40, color='orange', edgecolor='white')
+axes[2, 2].set_title('Aktivni kalorie za den')
+
+plt.tight_layout()
+plt.savefig('v4_4_overview.png', dpi=150)
+plt.show()
+print("Graf ulozen: v4_4_overview.png")
+
+# korelacni matice
+feat_cols = ['sleep_score', 'sleep_total_min', 'hr_night_avg',
+             'steps_total', 'active_kcal', 'sleep_deep_min',
+             'sleep_rem_min', 'sleep_awakenings', 'data_era']
+corr = df[feat_cols].corr()
+fig, ax = plt.subplots(figsize=(9, 7))
+im = ax.imshow(corr, cmap='RdBu_r', vmin=-1, vmax=1)
+ax.set_xticks(range(len(feat_cols)))
+ax.set_yticks(range(len(feat_cols)))
+ax.set_xticklabels(feat_cols, rotation=45, ha='right', fontsize=8)
+ax.set_yticklabels(feat_cols, fontsize=8)
+for i in range(len(feat_cols)):
+    for j in range(len(feat_cols)):
+        ax.text(j, i, f'{corr.iloc[i,j]:.2f}', ha='center', va='center',
+                fontsize=6, color='white' if abs(corr.iloc[i, j]) > 0.5 else 'black')
+plt.colorbar(im, ax=ax)
+ax.set_title('Korelacni matice features -> sleep_score')
+plt.tight_layout()
+plt.savefig('v4_4_correlation.png', dpi=150)
+plt.show()
+print("Graf ulozen: v4_4_correlation.png")
+
+df[FINAL_COLS].to_csv('health_daily_v4_4.csv', index=False)
+print(f"Ulozeno: health_daily_v4_4.csv ({len(df)} dni)")
