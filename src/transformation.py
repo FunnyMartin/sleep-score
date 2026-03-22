@@ -1,7 +1,7 @@
-# Vypocet sleep score
+# Vizualizace a oprava dvojiteho pocitani kroku
 # Martin Silar, SPSE Jecna C4c
-# v4 - pridany vzorec pro sleep score (target promenna modelu)
-#      korelacni matice, export datasetu
+# v4.1 - pridana funkce get_preferred_source (Watch vs iPhone)
+#        kompletni vizualizace 9 grafu
 
 import pandas as pd
 import numpy as np
@@ -9,9 +9,6 @@ import matplotlib.pyplot as plt
 import datetime
 import warnings
 warnings.filterwarnings('ignore')
-
-# [funkce load_hk_csv, parse_timestamps, classify_sleep_stage,
-#  get_sleep_date, agg_sleep jsou stejne jako v v3]
 
 
 def load_hk_csv(filename):
@@ -25,7 +22,7 @@ def load_hk_csv(filename):
     rename_map = {}
     for col in df.columns:
         cl = col.lower().strip()
-        if 'start' in cl:   rename_map[col] = 'ts_start'
+        if 'start' in cl: rename_map[col] = 'ts_start'
         elif 'end' in cl and 'ts_end' not in rename_map.values():
             rename_map[col] = 'ts_end'
         elif 'duration' in cl: rename_map[col] = 'duration_sec'
@@ -51,7 +48,7 @@ def classify_sleep_stage(val):
     v = str(val).strip().lower()
     if 'deep' in v or v == '3': return 'deep'
     elif 'rem' in v or v == '4': return 'rem'
-    elif 'core' in v or 'unspecified' in v or v in ['1', '2']: return 'core'
+    elif 'core' in v or 'unspecified' in v or v in ['1','2']: return 'core'
     elif v == 'asleep' or (v.endswith('asleep') and 'deep' not in v
                            and 'rem' not in v and 'core' not in v): return 'legacy'
     elif 'inbed' in v or v == '0': return 'inbed'
@@ -79,7 +76,31 @@ def agg_sleep(df_day):
         'sleep_rem_min': rem, 'sleep_awakenings': awakenings,
     })
 
-# --- NACITANI A AGREGACE (stejne jako v3) ---
+
+def compute_sleep_score(row):
+    hours = row['sleep_total_min'] / 60.0
+    hr = row['hr_night_avg']
+    if row['data_era'] == 0:
+        dur = max(0.0, 55.0 - abs(hours - 7.5) * 15.0)
+        hrt = max(0.0, 45.0 - max(0.0, hr - 55.0) * 1.5)
+        return round(min(100.0, max(0.0, dur + hrt)), 2)
+    else:
+        dur = max(0.0, 35.0 - abs(hours - 7.5) * 10.0)
+        hrt = max(0.0, 20.0 - max(0.0, hr - 55.0) * 0.7)
+        deep = min(20.0, (row['sleep_deep_min']/row['sleep_total_min'])*100) if row['sleep_total_min'] > 0 else 0
+        rem = min(15.0, (row['sleep_rem_min']/row['sleep_total_min'])*75) if row['sleep_total_min'] > 0 else 0
+        wake = max(0.0, 10.0 - row['sleep_awakenings'] * 1.2)
+        return round(min(100.0, max(0.0, dur+hrt+deep+rem+wake)), 2)
+
+
+# Watch ma prednost pred iPhonem - jinak se kroky pocitaji dvakrat
+def get_preferred_source(group):
+    if 'source' not in group.columns:
+        return group
+    for s in group['source'].unique():
+        if 'watch' in str(s).lower():
+            return group[group['source'] == s]
+    return group
 
 
 print("Nacitam...")
@@ -102,7 +123,8 @@ df_hr = df_hr[df_hr['value'].notna() & (df_hr['value'] <= 220)]
 df_hr['is_night'] = df_hr['hour'].apply(lambda h: h >= 22 or h < 6)
 df_hr_daily = df_hr.groupby('date').apply(
     lambda g: pd.Series({'hr_night_avg': g[g['is_night']]['value'].mean()
-    if (g['is_night']).sum() >= 3 else np.nan})).reset_index().sort_values('date').reset_index(drop=True)
+    if (g['is_night']).sum() >= 3 else np.nan})
+).reset_index().sort_values('date').reset_index(drop=True)
 frozen = (df_hr_daily['hr_night_avg'].eq(df_hr_daily['hr_night_avg'].shift(1)) &
           df_hr_daily['hr_night_avg'].eq(df_hr_daily['hr_night_avg'].shift(2)) &
           df_hr_daily['hr_night_avg'].eq(df_hr_daily['hr_night_avg'].shift(3)) &
@@ -110,8 +132,13 @@ frozen = (df_hr_daily['hr_night_avg'].eq(df_hr_daily['hr_night_avg'].shift(1)) &
 df_hr_daily.loc[frozen, 'hr_night_avg'] = np.nan
 
 df_steps['value'] = pd.to_numeric(df_steps['value'], errors='coerce')
-df_steps_daily = df_steps.dropna(subset=['value']).groupby('date').agg(
-    steps_total=('value', 'sum')).reset_index()
+df_steps = df_steps.dropna(subset=['value'])
+# nova funkce - preferujeme Watch zdroj
+df_steps_daily = (
+    df_steps.groupby('date', group_keys=False).apply(get_preferred_source)
+    .groupby('date').agg(steps_total=('value', 'sum')).reset_index()
+)
+
 df_act['value'] = pd.to_numeric(df_act['value'], errors='coerce')
 df_act_daily = df_act.dropna(subset=['value']).groupby('date').agg(
     active_kcal=('value', 'sum')).reset_index()
@@ -131,66 +158,49 @@ df = df[df['active_kcal'] > 0]
 for col in ['hr_night_avg', 'steps_total']:
     df[col] = df[col].fillna(df[col].median())
 
-# --- SLEEP SCORE ---
-# Kompozitni skore 0-100 podle vedeckych zdroju:
-#   Walker (2017), NSF (2015), Oura Ring methodology
-#
-# Era 0: jen delka spanku + nocni HR (faze nedostupne)
-# Era 1: delka + HR + deep/REM/probuzeni
-#
-# Vahy:            Era 0   Era 1
-#   delka spanku:    55      35
-#   nocni HR:        45      20
-#   deep sleep:       0      20
-#   REM sleep:        0      15
-#   probuzeni:        0      10
-#   MAX:            100     100
-
-
-def compute_sleep_score(row):
-    hours = row['sleep_total_min'] / 60.0
-    hr    = row['hr_night_avg']
-    if row['data_era'] == 0:
-        dur = max(0.0, 55.0 - abs(hours - 7.5) * 15.0)
-        hrt = max(0.0, 45.0 - max(0.0, hr - 55.0) * 1.5)
-        return round(min(100.0, max(0.0, dur + hrt)), 2)
-    else:
-        dur = max(0.0, 35.0 - abs(hours - 7.5) * 10.0)
-        hrt = max(0.0, 20.0 - max(0.0, hr - 55.0) * 0.7)
-        deep = min(20.0, (row['sleep_deep_min']/row['sleep_total_min'])*100) if row['sleep_total_min'] > 0 else 0
-        rem = min(15.0, (row['sleep_rem_min']/row['sleep_total_min'])*75) if row['sleep_total_min'] > 0 else 0
-        wake = max(0.0, 10.0 - row['sleep_awakenings'] * 1.2)
-        return round(min(100.0, max(0.0, dur+hrt+deep+rem+wake)), 2)
-
-
 df['sleep_score'] = df.apply(compute_sleep_score, axis=1)
-print("Sleep score po erach:")
-print(df.groupby('data_era')['sleep_score'].describe().round(2))
 
-# korelacni matice - viz jestli features dava smysl
-feat_cols = ['sleep_score', 'sleep_total_min', 'hr_night_avg',
-             'steps_total', 'active_kcal', 'sleep_deep_min',
-             'sleep_rem_min', 'sleep_awakenings', 'data_era']
-corr = df[feat_cols].corr()
+# kompletni vizualizace 9 grafu
+fig, axes = plt.subplots(3, 3, figsize=(16, 12))
+fig.suptitle('Prehled vycistennych dat - Sleep Score Predictor', fontsize=14)
 
-fig, ax = plt.subplots(figsize=(9,7))
-im = ax.imshow(corr, cmap='RdBu_r', vmin=-1, vmax=1)
-ax.set_xticks(range(len(feat_cols)))
-ax.set_yticks(range(len(feat_cols)))
-ax.set_xticklabels(feat_cols, rotation=45, ha='right', fontsize=8)
-ax.set_yticklabels(feat_cols, fontsize=8)
-for i in range(len(feat_cols)):
-    for j in range(len(feat_cols)):
-        ax.text(j, i, f'{corr.iloc[i,j]:.2f}', ha='center', va='center',
-                fontsize=6, color='white' if abs(corr.iloc[i, j]) > 0.5 else 'black')
-plt.colorbar(im, ax=ax)
-ax.set_title('Korelacni matice')
+axes[0, 0].hist(df['sleep_score'], bins=40, color='steelblue', edgecolor='white')
+axes[0, 0].set_title('Sleep Score (target)')
+
+for era, color, label in [(0,'steelblue','Era 0'),(1,'crimson','Era 1')]:
+    axes[0, 1].hist(df[df['data_era']==era]['sleep_score'],
+                   bins=30, alpha=0.6, color=color, label=label, edgecolor='white')
+axes[0, 1].set_title('Sleep Score po erach')
+axes[0, 1].legend(fontsize=8)
+
+axes[0, 2].scatter(df['date'], df['sleep_score'], s=2, alpha=0.4,
+                  c=df['data_era'], cmap='coolwarm')
+axes[0, 2].set_title('Sleep Score v case (modra=era 0, cervena=era 1)')
+
+axes[1, 0].hist(df['sleep_total_min']/60, bins=40, color='navy', edgecolor='white')
+axes[1, 0].axvline(7.5, color='red', linestyle='--', label='optimum 7.5h')
+axes[1, 0].set_title('Delka spanku (hodiny)')
+axes[1, 0].legend(fontsize=8)
+
+axes[1, 1].hist(df['hr_night_avg'], bins=40, color='crimson', edgecolor='white')
+axes[1, 1].axvline(55, color='red', linestyle='--', label='optimum <=55 BPM')
+axes[1, 1].set_title('Nocni HR (BPM)')
+axes[1, 1].legend(fontsize=8)
+
+era1 = df[df['data_era'] == 1]
+axes[1, 2].hist(era1['sleep_deep_min'], bins=40, color='purple', edgecolor='white')
+axes[1, 2].set_title('Deep Sleep min (era 1)')
+
+axes[2, 0].hist(era1['sleep_rem_min'], bins=40, color='indigo', edgecolor='white')
+axes[2, 0].set_title('REM Sleep min (era 1)')
+
+axes[2, 1].hist(df['steps_total'], bins=40, color='green', edgecolor='white')
+axes[2, 1].set_title('Kroky za den')
+
+axes[2, 2].hist(df['active_kcal'], bins=40, color='orange', edgecolor='white')
+axes[2, 2].set_title('Aktivni kalorie za den')
+
 plt.tight_layout()
-plt.savefig('v4_correlation.png', dpi=120)
+plt.savefig('v4_1_overview.png', dpi=150)
 plt.show()
-
-FINAL_COLS = ['date', 'sleep_score', 'sleep_total_min', 'hr_night_avg',
-              'steps_total', 'active_kcal', 'sleep_deep_min', 'sleep_rem_min',
-              'sleep_awakenings', 'data_era', 'day_of_week', 'month']
-df[FINAL_COLS].to_csv('health_daily_v4.csv', index=False)
-print(f"Ulozeno: {len(df)} dni -> health_daily_v4.csv")
+print(f"Ulozen dataset: {len(df)} dni")
