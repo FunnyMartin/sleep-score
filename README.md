@@ -1,5 +1,3 @@
-# Sleep Score Predictor - dokumentace
-
 **Autor:** Martin Šilar  
 **Škola:** SPŠE Ječná, Praha  
 **Ročník:** C4c  
@@ -311,3 +309,9 @@ Zdrojový kód je autorské dílo Martina Šilara vytvořené jako školní prá
 |---|---|---|
 | B01 | `sleep_awakenings = 0` pro éru 0 - starší zařízení data nesbírala | Nízká |
 | B02 | Rok 2021 chybí v datasetu (445 dní) - výměna zařízení | Nízká |
+    classification_report,
+    confusion_matrix,
+    f1_score,
+    precision_score,
+    recall_score,
+)

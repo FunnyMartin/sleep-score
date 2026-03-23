@@ -187,9 +187,6 @@ n_nan_steps = df['steps_total'].isna().sum()
 if n_nan_steps > 0:
     df['steps_total'] = df['steps_total'].fillna(df['steps_total'].median())
 
-# nova sekce: minimalizace imputovanych HR
-# dny kde hr_night_avg == NaN = hodinky nebyly nasazeny tu noc
-# chci jich mit co nejmene ale zachovat >= MIN_DAYS dni celkem
 MIN_DAYS = 1500
 
 df['_imp'] = df['hr_night_avg'].isna()
@@ -200,7 +197,6 @@ print(f"\nMinimalizace imputovanych HR:")
 print(f"  Celkem dni: {len(df)}, imputovanych: {n_imp}, muzu odstranit: {n_remove}")
 
 if n_remove > 0:
-    # najdu bloky po sobe jdoucich NaN dni
     df['_block'] = (df['_imp'] != df['_imp'].shift()).cumsum()
     blocks = []
     for bid, grp in df[df['_imp']].groupby('_block'):
@@ -208,7 +204,6 @@ if n_remove > 0:
                        'start': grp['date'].min(), 'end': grp['date'].max()})
     blocks_df = pd.DataFrame(blocks).sort_values('length', ascending=False)
 
-    # greedy: mazu od nejdelsich bloku
     to_remove = set()
     removed = 0
     for _, row in blocks_df.iterrows():
@@ -223,7 +218,6 @@ if n_remove > 0:
     df = df[~df['date'].isin(to_remove)].copy()
     df = df.drop(columns=['_block'])
 
-# zbyle NaN doplnime medianem
 _nan_mask = df['hr_night_avg'].isna()
 N_HR_IMPUTED = int(_nan_mask.sum())
 if N_HR_IMPUTED > 0:
@@ -238,8 +232,6 @@ FINAL_COLS = ['date', 'sleep_score', 'sleep_total_min', 'hr_night_avg',
 
 df['sleep_score'] = df.apply(compute_sleep_score, axis=1)
 
-# vizualizace - stejne grafy jako predtim ale HR je stacked bar
-# (imputovane hodnoty jsou videt oddelene od realnych dat)
 fig, axes = plt.subplots(3, 3, figsize=(16, 12))
 fig.suptitle('Prehled vycistennych dat - Sleep Score Predictor', fontsize=14)
 
@@ -260,10 +252,7 @@ axes[1, 0].axvline(7.5, color='red', linestyle='--', label='optimum 7.5h')
 axes[1, 0].set_title('Delka spanku (hodiny)')
 axes[1, 0].legend(fontsize=8)
 
-# HR stacked bar - imputovane hodnoty maji vsechny stejnou hodnotu (median)
-# zobrazim je oddelene aby bylo videt kolik jich je
 _median_hr = df['hr_night_avg'].median()
-# fallback detekce: kdyz N_HR_IMPUTED == 0 ale data maji zmrazene bloky
 _n_imp = N_HR_IMPUTED
 if _n_imp == 0:
     _run = (df['hr_night_avg'] != df['hr_night_avg'].shift()).cumsum()
@@ -309,7 +298,6 @@ plt.savefig('v4_4_overview.png', dpi=150)
 plt.show()
 print("Graf ulozen: v4_4_overview.png")
 
-# korelacni matice
 feat_cols = ['sleep_score', 'sleep_total_min', 'hr_night_avg',
              'steps_total', 'active_kcal', 'sleep_deep_min',
              'sleep_rem_min', 'sleep_awakenings', 'data_era']
@@ -331,8 +319,6 @@ plt.savefig('v4_4_correlation.png', dpi=150)
 plt.show()
 print("Graf ulozen: v4_4_correlation.png")
 
-
-# orientacni evaluace, jen pro overeni ze data jsou OK
 _split = int(len(df) * 0.8)
 FEATURES_EVAL = ['sleep_total_min', 'hr_night_avg', 'steps_total', 'active_kcal',
                  'sleep_deep_min', 'sleep_rem_min', 'sleep_awakenings',
@@ -352,7 +338,6 @@ print(f"MAE:   {_mae:.4f} bodu")
 print(f"RMSE:  {_rmse:.4f} bodu")
 print(f"R2:    {_r2:.4f}")
 
-# vliv imputace na MAE
 _med = df['hr_night_avg'].median()
 _imp_t = (df['hr_night_avg'].round(2).iloc[_split:] == round(_med, 2))
 if _imp_t.sum() > 0:
