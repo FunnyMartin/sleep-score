@@ -1,0 +1,168 @@
+body {
+    margin: 0;
+    padding: 30px 16px;
+    background: #1a1a1a;
+    color: #ccc;
+    font-family: monospace;
+    font-size: 14px;
+}
+
+.container {
+    max-width: 500px;
+    margin: 0 auto;
+}
+
+h1 {
+    color: #eee;
+    font-size: 17px;
+    font-weight: normal;
+    margin-bottom: 4px;
+}
+
+.subtitle {
+    color: #555;
+    font-size: 12px;
+    margin-bottom: 28px;
+}
+
+.section {
+    border: 1px solid #2e2e2e;
+    padding: 16px;
+    margin-bottom: 10px;
+    background: #202020;
+}
+
+.section-label {
+    font-size: 11px;
+    color: #555;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 12px;
+}
+
+.row {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 8px;
+}
+
+.field {
+    flex: 1;
+}
+
+.field label {
+    display: block;
+    font-size: 11px;
+    color: #666;
+    margin-bottom: 3px;
+}
+
+.field input,
+.field select {
+    width: 100%;
+    box-sizing: border-box;
+    background: #141414;
+    border: 1px solid #2e2e2e;
+    color: #ccc;
+    font-family: monospace;
+    font-size: 13px;
+    padding: 6px 8px;
+    outline: none;
+}
+
+.field input:focus,
+.field select:focus {
+    border-color: #444;
+}
+
+.field input::placeholder {
+    color: #333;
+}
+
+.hint {
+    font-size: 11px;
+    color: #444;
+    margin-top: 8px;
+}
+
+#submit-btn {
+    width: 100%;
+    padding: 9px;
+    background: #1a1a1a;
+    border: 1px solid #333;
+    color: #aaa;
+    font-family: monospace;
+    font-size: 13px;
+    cursor: pointer;
+    margin-top: 4px;
+}
+
+#submit-btn:hover {
+    background: #222;
+    color: #ddd;
+}
+
+#submit-btn:disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+
+#result {
+    display: none;
+    margin-top: 10px;
+    padding: 14px 16px;
+    border: 1px solid #2e2e2e;
+}
+
+#result.good {
+    background: #0d1f12;
+    border-color: #1e4a28;
+    color: #55bb70;
+}
+
+#result.bad {
+    background: #1f0d0d;
+    border-color: #4a1e1e;
+    color: #bb5555;
+}
+
+.result-title {
+    font-size: 15px;
+    font-weight: bold;
+    margin-bottom: 6px;
+}
+
+.result-prob {
+    font-size: 11px;
+    opacity: 0.7;
+}
+
+.prob-bar {
+    height: 3px;
+    background: rgba(255,255,255,0.08);
+    margin: 8px 0 4px;
+}
+
+.prob-fill {
+    height: 100%;
+    transition: width 0.4s;
+}
+
+#result.good .prob-fill { background: #55bb70; }
+#result.bad  .prob-fill { background: #bb5555; }
+
+#error-box {
+    display: none;
+    margin-top: 8px;
+    padding: 8px 12px;
+    background: #1f0d0d;
+    border: 1px solid #4a1e1e;
+    color: #bb5555;
+    font-size: 12px;
+}
+
+.footer {
+    margin-top: 24px;
+    font-size: 11px;
+    color: #383838;
+}
