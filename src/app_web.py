@@ -8,13 +8,12 @@ Dostupne na http://localhost:5000
 """
 
 import os
-import joblib
+import pickle
 import numpy as np
 from flask import Flask, request, jsonify, render_template
 
-app = Flask(__name__)
-
-MODEL_PATH = os.path.join(os.path.dirname(__file__), 'models', 'sleep_model.pkl')
+app = Flask(__name__, template_folder='../templates', static_folder='../static')
+MODEL_PATH = os.path.join(os.path.dirname(__file__), '..', 'models', 'sleep_model.pkl')
 
 _model_data = None
 
@@ -24,9 +23,12 @@ def load_model():
     if not os.path.exists(MODEL_PATH):
         return False
     try:
-        _model_data = joblib.load(MODEL_PATH)
+        with open(MODEL_PATH, 'rb') as f:
+            _model_data = pickle.load(f)
         return True
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         print(f"Nacteni modelu selhalo: {e}")
         return False
 

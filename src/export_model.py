@@ -20,8 +20,9 @@ from sklearn.metrics import (
     classification_report
 )
 
-DATA_PATH = 'health_daily_v5.csv'
-MODEL_DIR = 'models'
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_PATH = os.path.join(_ROOT, 'data', 'health_daily_v5.csv')
+MODEL_DIR = os.path.join(_ROOT, 'models')
 MODEL_PATH = os.path.join(MODEL_DIR, 'sleep_model.pkl')
 
 N_LAGS = 7
