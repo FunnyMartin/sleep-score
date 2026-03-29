@@ -294,9 +294,9 @@ axes[2, 2].hist(df['active_kcal'], bins=40, color='orange', edgecolor='white')
 axes[2, 2].set_title('Aktivni kalorie za den')
 
 plt.tight_layout()
-plt.savefig('v4_4_overview.png', dpi=150)
+plt.savefig('overview.png', dpi=150)
 plt.show()
-print("Graf ulozen: v4_4_overview.png")
+print("Graf ulozen: overview.png")
 
 feat_cols = ['sleep_score', 'sleep_total_min', 'hr_night_avg',
              'steps_total', 'active_kcal', 'sleep_deep_min',
@@ -315,9 +315,9 @@ for i in range(len(feat_cols)):
 plt.colorbar(im, ax=ax)
 ax.set_title('Korelacni matice features -> sleep_score')
 plt.tight_layout()
-plt.savefig('v4_4_correlation.png', dpi=150)
+plt.savefig('correlation.png', dpi=150)
 plt.show()
-print("Graf ulozen: v4_4_correlation.png")
+print("Graf ulozen: correlation.png")
 
 _split = int(len(df) * 0.8)
 FEATURES_EVAL = ['sleep_total_min', 'hr_night_avg', 'steps_total', 'active_kcal',
