@@ -121,7 +121,7 @@ Standardní práh 0.5 nemusí být optimální. Model hledá nejlepší práh na
 |---|----------------------|
 | Accuracy | ~66%                 |
 | Baseline (naivní tip) | 50%                  |
-| Zlepšení | +19 procentních bodů |
+| Zlepšení | +16 procentních bodů |
 
 ### Dataset
 | Metoda                     | Hodnota |
